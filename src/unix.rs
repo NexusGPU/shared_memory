@@ -81,23 +81,27 @@ impl MapData {
 }
 
 /// Creates a mapping specified by the uid and size
-pub fn create_mapping(unique_id: &str, map_size: usize) -> Result<MapData, ShmemError> {
+pub fn create_mapping(
+    unique_id: &str,
+    map_size: usize,
+    mode: Option<Mode>,
+) -> Result<MapData, ShmemError> {
     //Create shared memory file descriptor
     debug!("Creating persistent mapping at {}", unique_id);
 
     let nz_map_size = NonZeroUsize::new(map_size).ok_or(ShmemError::MapSizeZero)?;
-
+    let mode = mode.unwrap_or(Mode::S_IRUSR | Mode::S_IWUSR);
     let shmem_fd = match shm_open(
         unique_id, //Unique name that usualy pops up in /dev/shm/
         OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR, //create exclusively (error if collision) and read/write to allow resize
-        Mode::S_IRUSR | Mode::S_IWUSR,                  //Permission allow user+rw
+        mode,                                           // default permission allow user+rw
     ) {
         Ok(v) => {
             trace!(
                 "shm_open({}, {:X}, {:X}) == {}",
                 unique_id,
                 OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR,
-                Mode::S_IRUSR | Mode::S_IWUSR,
+                mode,
                 v
             );
             v

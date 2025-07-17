@@ -267,7 +267,11 @@ fn new_map(
 }
 
 //Creates a mapping specified by the uid and size
-pub fn create_mapping(unique_id: &str, map_size: usize) -> Result<MapData, ShmemError> {
+pub fn create_mapping(
+    unique_id: &str,
+    map_size: usize,
+    _mode: Option<Mode>,
+) -> Result<MapData, ShmemError> {
     new_map(unique_id, map_size, true, false)
 }
 

@@ -9,7 +9,7 @@ use std::fs::remove_file;
 use std::path::{Path, PathBuf};
 
 use cfg_if::cfg_if;
-use nix::sys::stat::Mode;
+pub use nix::sys::stat::Mode;
 
 cfg_if! {
     if #[cfg(feature = "logging")] {

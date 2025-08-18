@@ -26,6 +26,8 @@ pub struct MapData {
     pub map_size: usize,
     //Pointer to the first address of our mapping
     pub map_ptr: *mut u8,
+    //Whether this mapping uses tmpfs (true) or shm_open (false)
+    is_tmpfs: bool,
 }
 
 impl MapData {
@@ -55,10 +57,19 @@ impl Drop for MapData {
             //unlink shmem if we created it
             if self.owner {
                 debug!("Deleting persistent mapping");
-                trace!("shm_unlink({})", self.unique_id.as_str());
-                if let Err(_e) = shm_unlink(self.unique_id.as_str()) {
-                    debug!("Failed to shm_unlink() shared memory : {}", _e);
-                };
+                if self.is_tmpfs {
+                    // tmpfs mode: remove file
+                    trace!("remove_file({})", self.unique_id.as_str());
+                    if let Err(_e) = std::fs::remove_file(&self.unique_id) {
+                        debug!("Failed to remove tmpfs file {} : {}", self.unique_id, _e);
+                    };
+                } else {
+                    // shm_open mode: use shm_unlink
+                    trace!("shm_unlink({})", self.unique_id.as_str());
+                    if let Err(_e) = shm_unlink(self.unique_id.as_str()) {
+                        debug!("Failed to shm_unlink() shared memory : {}", _e);
+                    };
+                }
             }
 
             trace!("close({})", self.map_fd);
@@ -116,6 +127,7 @@ pub fn create_mapping(
         map_fd: shmem_fd,
         map_size,
         map_ptr: null_mut(),
+        is_tmpfs: false,
     };
 
     //Enlarge the memory descriptor file size to the requested map size
@@ -187,6 +199,7 @@ pub fn open_mapping(
         map_fd: shmem_fd,
         map_size: 0,
         map_ptr: null_mut(),
+        is_tmpfs: false,
     };
 
     //Get mmap size
@@ -224,4 +237,140 @@ pub fn open_mapping(
     };
 
     Ok(new_map)
+}
+
+/// Creates a mapping using tmpfs file
+pub fn create_mapping_tmpfs(
+    file_path: &str,
+    map_size: usize,
+    mode: Option<Mode>,
+) -> Result<MapData, ShmemError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+
+    let nz_map_size = NonZeroUsize::new(map_size).ok_or(ShmemError::MapSizeZero)?;
+    let mode_bits = mode.unwrap_or(Mode::S_IRUSR | Mode::S_IWUSR).bits();
+
+    debug!("Creating tmpfs mapping at {}", file_path);
+
+    // Create the file
+    let file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .mode(mode_bits)
+        .open(file_path)
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => ShmemError::MappingIdExists,
+            _ => ShmemError::MapCreateFailed(e.raw_os_error().unwrap_or(0) as u32),
+        })?;
+
+    let fd = file.as_raw_fd();
+
+    // Set file size
+    trace!("ftruncate({}, {})", fd, map_size);
+    match ftruncate(fd, map_size as _) {
+        Ok(_) => {}
+        Err(e) => return Err(ShmemError::UnknownOsError(e as u32)),
+    }
+
+    // Map the file into memory
+    debug!("Loading tmpfs mapping into address space");
+    let map_ptr = match unsafe {
+        mmap(
+            None,                                         // Desired addr
+            nz_map_size,                                  // Size of mapping
+            ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, // Permissions on pages
+            MapFlags::MAP_SHARED,                         // What kind of mapping
+            fd,                                           // File descriptor
+            0,                                            // Offset into fd
+        )
+    } {
+        Ok(v) => {
+            trace!(
+                "mmap(NULL, {}, {:X}, {:X}, {}, 0) == {:p}",
+                map_size,
+                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+                MapFlags::MAP_SHARED,
+                fd,
+                v
+            );
+            v as *mut u8
+        }
+        Err(e) => return Err(ShmemError::MapCreateFailed(e as u32)),
+    };
+
+    // Prevent file from being dropped and closed
+    std::mem::forget(file);
+
+    Ok(MapData {
+        owner: true,
+        unique_id: String::from(file_path),
+        map_fd: fd,
+        map_size,
+        map_ptr,
+        is_tmpfs: true,
+    })
+}
+
+/// Opens an existing tmpfs mapping
+pub fn open_mapping_tmpfs(file_path: &str, _expected_size: usize) -> Result<MapData, ShmemError> {
+    use std::os::unix::io::AsRawFd;
+
+    debug!("Opening tmpfs mapping at {}", file_path);
+
+    // Open the file
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(file_path)
+        .map_err(|e| ShmemError::MapOpenFailed(e.raw_os_error().unwrap_or(0) as u32))?;
+
+    let fd = file.as_raw_fd();
+
+    // Get file size
+    let map_size = match fstat(fd) {
+        Ok(v) => v.st_size as usize,
+        Err(e) => return Err(ShmemError::MapOpenFailed(e as u32)),
+    };
+
+    let nz_map_size = NonZeroUsize::new(map_size).ok_or(ShmemError::MapSizeZero)?;
+
+    // Map the file into memory
+    debug!("Loading tmpfs mapping into address space");
+    let map_ptr = match unsafe {
+        mmap(
+            None,                                         // Desired addr
+            nz_map_size,                                  // Size of mapping
+            ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, // Permissions on pages
+            MapFlags::MAP_SHARED,                         // What kind of mapping
+            fd,                                           // File descriptor
+            0,                                            // Offset into fd
+        )
+    } {
+        Ok(v) => {
+            trace!(
+                "mmap(NULL, {}, {:X}, {:X}, {}, 0) == {:p}",
+                map_size,
+                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+                MapFlags::MAP_SHARED,
+                fd,
+                v
+            );
+            v as *mut u8
+        }
+        Err(e) => return Err(ShmemError::MapOpenFailed(e as u32)),
+    };
+
+    // Prevent file from being dropped and closed
+    std::mem::forget(file);
+
+    Ok(MapData {
+        owner: false,
+        unique_id: String::from(file_path),
+        map_fd: fd,
+        map_size,
+        map_ptr,
+        is_tmpfs: true,
+    })
 }

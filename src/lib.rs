@@ -191,16 +191,24 @@ impl ShmemConf {
                     // Generate random ID until one works
                     loop {
                         let cur_id = format!("/shmem_{:X}", rand::random::<u64>());
-                        match os_impl::create_mapping(&cur_id, self.size, self.mode) {
+                        match os_impl::create_mapping(
+                            &cur_id,
+                            self.size,
+                            #[cfg(not(target_os = "windows"))]
+                            self.mode,
+                        ) {
                             Err(ShmemError::MappingIdExists) => continue,
                             Ok(m) => break m,
                             Err(e) => return Err(e),
                         }
                     }
                 }
-                Some(ref specific_id) => {
-                    os_impl::create_mapping(specific_id, self.size, self.mode)?
-                }
+                Some(ref specific_id) => os_impl::create_mapping(
+                    specific_id,
+                    self.size,
+                    #[cfg(not(target_os = "windows"))]
+                    self.mode,
+                )?,
             }
         };
 

@@ -257,7 +257,12 @@ pub fn create_mapping_tmpfs(
         .create_new(true)
         .read(true)
         .write(true)
-        .mode(mode_bits.into())
+        .mode({
+            #[cfg(target_os = "macos")]
+            { u32::from(mode_bits) }
+            #[cfg(not(target_os = "macos"))]
+            { mode_bits }
+        })
         .open(file_path)
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::AlreadyExists => ShmemError::MappingIdExists,

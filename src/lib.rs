@@ -45,7 +45,7 @@ cfg_if! {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 /// Struct used to configure different parameters before creating a shared memory mapping
 pub struct ShmemConf {
     owner: bool,
@@ -55,7 +55,9 @@ pub struct ShmemConf {
     size: usize,
     ext: os_impl::ShmemConfExt,
     mode: Option<Mode>,
+    #[cfg(not(target_os = "windows"))]
     use_tmpfs: bool,
+    #[cfg(not(target_os = "windows"))]
     tmpfs_base_dir: Option<PathBuf>,
 }
 impl Drop for ShmemConf {
@@ -66,6 +68,24 @@ impl Drop for ShmemConf {
                 debug!("Deleting file link {}", flink_path.to_string_lossy());
                 let _ = remove_file(flink_path);
             }
+        }
+    }
+}
+
+impl Default for ShmemConf {
+    fn default() -> Self {
+        Self {
+            owner: false,
+            os_id: None,
+            overwrite_flink: false,
+            flink_path: None,
+            size: 0,
+            ext: os_impl::ShmemConfExt,
+            mode: None,
+            #[cfg(not(target_os = "windows"))]
+            use_tmpfs: false,
+            #[cfg(not(target_os = "windows"))]
+            tmpfs_base_dir: None,
         }
     }
 }
@@ -113,6 +133,7 @@ impl ShmemConf {
     /// Enable tmpfs mode with a specific base directory
     ///
     /// This will use regular files in the specified directory instead of POSIX shared memory
+    #[cfg(not(target_os = "windows"))]
     pub fn use_tmpfs_with_dir<P: AsRef<Path>>(mut self, base_dir: P) -> Self {
         self.use_tmpfs = true;
         self.tmpfs_base_dir = Some(PathBuf::from(base_dir.as_ref()));
@@ -120,6 +141,7 @@ impl ShmemConf {
     }
 
     /// Get the tmpfs file path for this configuration
+    #[cfg(not(target_os = "windows"))]
     fn get_tmpfs_file_path(&self) -> Result<PathBuf, ShmemError> {
         if !self.use_tmpfs {
             return Err(ShmemError::NotInTmpfsMode);
@@ -152,7 +174,7 @@ impl ShmemConf {
         }
 
         // Create the mapping
-        let mapping = if self.use_tmpfs {
+        let mapping = if cfg!(not(target_os = "windows")) && self.use_tmpfs {
             // tmpfs mode
             if self.os_id.is_some() {
                 // Use specified os_id
@@ -198,6 +220,7 @@ impl ShmemConf {
                 }
             }
         };
+
         debug!("Created shared memory mapping '{}'", mapping.unique_id);
 
         // Create flink
@@ -245,7 +268,11 @@ impl ShmemConf {
     /// Opens an existing mapping using the current configuration
     pub fn open(mut self) -> Result<Shmem, ShmemError> {
         // Must at least have a flink or an os_id (except in tmpfs mode where we might infer the path)
-        if self.flink_path.is_none() && self.os_id.is_none() && !self.use_tmpfs {
+        if self.flink_path.is_none()
+            && self.os_id.is_none()
+            && !cfg!(not(target_os = "windows"))
+            && self.use_tmpfs
+        {
             debug!("Open called with no file link or unique id...");
             return Err(ShmemError::NoLinkOrOsId);
         }
@@ -256,7 +283,7 @@ impl ShmemConf {
         loop {
             let target_identifier = if let Some(ref unique_id) = self.os_id {
                 retry = 5;
-                if self.use_tmpfs {
+                if cfg!(not(target_os = "windows")) && self.use_tmpfs {
                     // tmpfs mode: convert os_id to file path
                     let tmpfs_path = self.get_tmpfs_file_path()?;
                     tmpfs_path.to_string_lossy().to_string()
@@ -279,12 +306,14 @@ impl ShmemConf {
                 return Err(ShmemError::NoLinkOrOsId);
             };
 
-            let mapping_result = if self.use_tmpfs {
-                // tmpfs mode: target_identifier is a file path
-                os_impl::open_mapping_tmpfs(&target_identifier, self.size)
-            } else {
-                // shm_open mode: target_identifier is shm ID
-                os_impl::open_mapping(&target_identifier, self.size, &self.ext)
+            let mapping_result = {
+                if cfg!(not(target_os = "windows")) && self.use_tmpfs {
+                    // tmpfs mode: target_identifier is a file path
+                    os_impl::open_mapping_tmpfs(&target_identifier, self.size)
+                } else {
+                    // shm_open mode: target_identifier is shm ID
+                    os_impl::open_mapping(&target_identifier, self.size, &self.ext)
+                }
             };
 
             match mapping_result {

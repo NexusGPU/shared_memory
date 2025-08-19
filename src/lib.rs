@@ -56,10 +56,12 @@ pub struct ShmemConf {
     flink_path: Option<PathBuf>,
     size: usize,
     ext: os_impl::ShmemConfExt,
+    #[cfg(not(target_os = "windows"))]
     mode: Option<Mode>,
     use_tmpfs: bool,
     tmpfs_base_dir: Option<PathBuf>,
 }
+
 impl Drop for ShmemConf {
     fn drop(&mut self) {
         // Delete the flink if we are the owner of the mapping

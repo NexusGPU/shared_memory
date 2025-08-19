@@ -280,14 +280,10 @@ pub fn open_mapping(
     new_map(unique_id, map_size, false, ext.allow_raw)
 }
 
-pub fn create_mapping_tmpfs(_unique_id: &str, _map_size: usize) -> Result<MapData, ShmemError> {
+pub fn create_mapping_tmpfs(_file_path: &str, _map_size: usize) -> Result<MapData, ShmemError> {
     unimplemented!()
 }
 
-pub fn open_mapping_tmpfs(
-    _unique_id: &str,
-    _map_size: usize,
-    _ext: &ShmemConfExt,
-) -> Result<MapData, ShmemError> {
+pub fn open_mapping_tmpfs(_file_path: &str, _expected_size: usize) -> Result<MapData, ShmemError> {
     unimplemented!()
 }

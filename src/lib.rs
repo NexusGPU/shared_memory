@@ -107,6 +107,7 @@ impl ShmemConf {
     }
 
     /// Sets the mode of the mapping that will be used in `create()`
+    #[cfg(not(target_os = "windows"))]
     pub fn mode(mut self, mode: Mode) -> Self {
         self.mode = Some(mode);
         self

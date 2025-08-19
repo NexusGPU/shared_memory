@@ -1,4 +1,6 @@
 use std::num::NonZeroUsize;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::io::RawFd;
 use std::ptr::null_mut;
 
@@ -245,9 +247,6 @@ pub fn create_mapping_tmpfs(
     map_size: usize,
     mode: Option<Mode>,
 ) -> Result<MapData, ShmemError> {
-    use std::os::unix::fs::OpenOptionsExt;
-    use std::os::unix::io::AsRawFd;
-
     let nz_map_size = NonZeroUsize::new(map_size).ok_or(ShmemError::MapSizeZero)?;
     let mode_bits = mode.unwrap_or(Mode::S_IRUSR | Mode::S_IWUSR).bits();
 
@@ -258,7 +257,7 @@ pub fn create_mapping_tmpfs(
         .create_new(true)
         .read(true)
         .write(true)
-        .mode(mode_bits)
+        .mode(mode_bits.into())
         .open(file_path)
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::AlreadyExists => ShmemError::MappingIdExists,

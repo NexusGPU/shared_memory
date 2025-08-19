@@ -57,7 +57,7 @@ fn increment_value(shmem_flink: &str, thread_num: usize) {
     let is_init: &mut AtomicU8;
 
     unsafe {
-        is_init = &mut *(raw_ptr as *mut u8 as *mut AtomicU8);
+        is_init = &mut *(raw_ptr as *mut AtomicU8);
         raw_ptr = raw_ptr.add(8);
     };
 

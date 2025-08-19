@@ -45,7 +45,7 @@ cfg_if! {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 /// Struct used to configure different parameters before creating a shared memory mapping
 pub struct ShmemConf {
     owner: bool,
@@ -55,9 +55,7 @@ pub struct ShmemConf {
     size: usize,
     ext: os_impl::ShmemConfExt,
     mode: Option<Mode>,
-    #[cfg(not(target_os = "windows"))]
     use_tmpfs: bool,
-    #[cfg(not(target_os = "windows"))]
     tmpfs_base_dir: Option<PathBuf>,
 }
 impl Drop for ShmemConf {
@@ -68,24 +66,6 @@ impl Drop for ShmemConf {
                 debug!("Deleting file link {}", flink_path.to_string_lossy());
                 let _ = remove_file(flink_path);
             }
-        }
-    }
-}
-
-impl Default for ShmemConf {
-    fn default() -> Self {
-        Self {
-            owner: false,
-            os_id: None,
-            overwrite_flink: false,
-            flink_path: None,
-            size: 0,
-            ext: os_impl::ShmemConfExt,
-            mode: None,
-            #[cfg(not(target_os = "windows"))]
-            use_tmpfs: false,
-            #[cfg(not(target_os = "windows"))]
-            tmpfs_base_dir: None,
         }
     }
 }
@@ -141,7 +121,6 @@ impl ShmemConf {
     }
 
     /// Get the tmpfs file path for this configuration
-    #[cfg(not(target_os = "windows"))]
     fn get_tmpfs_file_path(&self) -> Result<PathBuf, ShmemError> {
         if !self.use_tmpfs {
             return Err(ShmemError::NotInTmpfsMode);

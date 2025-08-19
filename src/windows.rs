@@ -283,3 +283,19 @@ pub fn open_mapping(
 ) -> Result<MapData, ShmemError> {
     new_map(unique_id, map_size, false, ext.allow_raw)
 }
+
+pub fn create_mapping_tmpfs(
+    _unique_id: &str,
+    _map_size: usize,
+    _mode: Option<Mode>,
+) -> Result<MapData, ShmemError> {
+    unimplemented!()
+}
+
+pub fn open_mapping_tmpfs(
+    _unique_id: &str,
+    _map_size: usize,
+    _ext: &ShmemConfExt,
+) -> Result<MapData, ShmemError> {
+    unimplemented!()
+}

@@ -9,6 +9,8 @@ use std::fs::remove_file;
 use std::path::{Path, PathBuf};
 
 use cfg_if::cfg_if;
+
+#[cfg(not(target_os = "windows"))]
 pub use nix::sys::stat::Mode;
 
 cfg_if! {
@@ -54,8 +56,12 @@ pub struct ShmemConf {
     flink_path: Option<PathBuf>,
     size: usize,
     ext: os_impl::ShmemConfExt,
+    #[cfg(not(target_os = "windows"))]
     mode: Option<Mode>,
+    use_tmpfs: bool,
+    tmpfs_base_dir: Option<PathBuf>,
 }
+
 impl Drop for ShmemConf {
     fn drop(&mut self) {
         // Delete the flink if we are the owner of the mapping
@@ -103,9 +109,40 @@ impl ShmemConf {
     }
 
     /// Sets the mode of the mapping that will be used in `create()`
+    #[cfg(not(target_os = "windows"))]
     pub fn mode(mut self, mode: Mode) -> Self {
         self.mode = Some(mode);
         self
+    }
+
+    /// Enable tmpfs mode with a specific base directory
+    ///
+    /// This will use regular files in the specified directory instead of POSIX shared memory
+    #[cfg(not(target_os = "windows"))]
+    pub fn use_tmpfs_with_dir<P: AsRef<Path>>(mut self, base_dir: P) -> Self {
+        self.use_tmpfs = true;
+        self.tmpfs_base_dir = Some(PathBuf::from(base_dir.as_ref()));
+        self
+    }
+
+    /// Get the tmpfs file path for this configuration
+    fn get_tmpfs_file_path(&self) -> Result<PathBuf, ShmemError> {
+        if !self.use_tmpfs {
+            return Err(ShmemError::NotInTmpfsMode);
+        }
+
+        let base_dir = self
+            .tmpfs_base_dir
+            .as_ref()
+            .ok_or(ShmemError::NoTmpfsBaseDir)?;
+
+        if let Some(ref os_id) = self.os_id {
+            // Use os_id as filename
+            Ok(base_dir.join(format!("shmem_{os_id}")))
+        } else {
+            // Generate random filename
+            Ok(base_dir.join(format!("shmem_{:X}", rand::random::<u64>())))
+        }
     }
 
     /// Create a new mapping using the current configuration
@@ -121,22 +158,63 @@ impl ShmemConf {
         }
 
         // Create the mapping
-        let mapping = match self.os_id {
-            None => {
-                // Generate random ID until one works
+        let mapping = if cfg!(not(target_os = "windows")) && self.use_tmpfs {
+            // tmpfs mode
+            if self.os_id.is_some() {
+                // Use specified os_id
+                let tmpfs_file_path = self.get_tmpfs_file_path()?;
+                os_impl::create_mapping_tmpfs(
+                    tmpfs_file_path
+                        .to_str()
+                        .ok_or(ShmemError::UnknownOsError(0))?,
+                    self.size,
+                    #[cfg(not(target_os = "windows"))]
+                    self.mode,
+                )?
+            } else {
+                // Generate random filename until one works
                 loop {
-                    let cur_id = format!("/shmem_{:X}", rand::random::<u64>());
-                    match os_impl::create_mapping(&cur_id, self.size, self.mode) {
+                    let random_path = self.get_tmpfs_file_path()?;
+                    match os_impl::create_mapping_tmpfs(
+                        random_path.to_str().ok_or(ShmemError::UnknownOsError(0))?,
+                        self.size,
+                        #[cfg(not(target_os = "windows"))]
+                        self.mode,
+                    ) {
                         Err(ShmemError::MappingIdExists) => continue,
                         Ok(m) => break m,
-                        Err(e) => {
-                            return Err(e);
-                        }
-                    };
+                        Err(e) => return Err(e),
+                    }
                 }
             }
-            Some(ref specific_id) => os_impl::create_mapping(specific_id, self.size, self.mode)?,
+        } else {
+            // shm_open mode
+            match self.os_id {
+                None => {
+                    // Generate random ID until one works
+                    loop {
+                        let cur_id = format!("/shmem_{:X}", rand::random::<u64>());
+                        match os_impl::create_mapping(
+                            &cur_id,
+                            self.size,
+                            #[cfg(not(target_os = "windows"))]
+                            self.mode,
+                        ) {
+                            Err(ShmemError::MappingIdExists) => continue,
+                            Ok(m) => break m,
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+                Some(ref specific_id) => os_impl::create_mapping(
+                    specific_id,
+                    self.size,
+                    #[cfg(not(target_os = "windows"))]
+                    self.mode,
+                )?,
+            }
         };
+
         debug!("Created shared memory mapping '{}'", mapping.unique_id);
 
         // Create flink
@@ -153,7 +231,7 @@ impl ShmemConf {
 
             match open_options.open(flink_path) {
                 Ok(mut f) => {
-                    // write the shmem uid asap
+                    // write the mapping identifier
                     if let Err(e) = f.write(mapping.unique_id.as_bytes()) {
                         let _ = std::fs::remove_file(flink_path);
                         return Err(ShmemError::LinkWriteFailed(e));
@@ -183,36 +261,56 @@ impl ShmemConf {
 
     /// Opens an existing mapping using the current configuration
     pub fn open(mut self) -> Result<Shmem, ShmemError> {
-        // Must at least have a flink or an os_id
-        if self.flink_path.is_none() && self.os_id.is_none() {
+        // Must at least have a flink or an os_id (except in tmpfs mode where we might infer the path)
+        if self.flink_path.is_none()
+            && self.os_id.is_none()
+            && !cfg!(not(target_os = "windows"))
+            && self.use_tmpfs
+        {
             debug!("Open called with no file link or unique id...");
             return Err(ShmemError::NoLinkOrOsId);
         }
 
-        let mut flink_uid = String::new();
+        let mut flink_content = String::new();
         let mut retry = 0;
+
         loop {
-            let unique_id = if let Some(ref unique_id) = self.os_id {
+            let target_identifier = if let Some(ref unique_id) = self.os_id {
                 retry = 5;
-                unique_id.as_str()
-            } else {
-                let flink_path = self.flink_path.as_ref().unwrap();
+                if cfg!(not(target_os = "windows")) && self.use_tmpfs {
+                    // tmpfs mode: convert os_id to file path
+                    let tmpfs_path = self.get_tmpfs_file_path()?;
+                    tmpfs_path.to_string_lossy().to_string()
+                } else {
+                    // shm_open mode: use os_id directly
+                    unique_id.clone()
+                }
+            } else if let Some(ref flink_path) = self.flink_path {
+                // Read from flink file
                 debug!(
                     "Open shared memory from file link {}",
                     flink_path.to_string_lossy()
                 );
-                let mut f = match File::open(flink_path) {
-                    Ok(f) => f,
-                    Err(e) => return Err(ShmemError::LinkOpenFailed(e)),
-                };
-                flink_uid.clear();
-                if let Err(e) = f.read_to_string(&mut flink_uid) {
-                    return Err(ShmemError::LinkReadFailed(e));
-                }
-                flink_uid.as_str()
+                let mut f = File::open(flink_path).map_err(ShmemError::LinkOpenFailed)?;
+                flink_content.clear();
+                f.read_to_string(&mut flink_content)
+                    .map_err(ShmemError::LinkReadFailed)?;
+                flink_content.clone()
+            } else {
+                return Err(ShmemError::NoLinkOrOsId);
             };
 
-            match os_impl::open_mapping(unique_id, self.size, &self.ext) {
+            let mapping_result = {
+                if cfg!(not(target_os = "windows")) && self.use_tmpfs {
+                    // tmpfs mode: target_identifier is a file path
+                    os_impl::open_mapping_tmpfs(&target_identifier, self.size)
+                } else {
+                    // shm_open mode: target_identifier is shm ID
+                    os_impl::open_mapping(&target_identifier, self.size, &self.ext)
+                }
+            };
+
+            match mapping_result {
                 Ok(m) => {
                     self.size = m.map_size;
                     self.owner = false;
@@ -222,8 +320,8 @@ impl ShmemConf {
                         mapping: m,
                     });
                 }
-                // If we got this failing os_id from the flink, try again in case the shmem owner didnt write the full
-                // unique_id to the file
+                // If we got this failing from the flink, try again in case the owner didn't write the full
+                // identifier to the file yet
                 Err(ShmemError::MapOpenFailed(_)) if self.os_id.is_none() && retry < 5 => {
                     retry += 1;
                     std::thread::sleep(std::time::Duration::from_millis(50));

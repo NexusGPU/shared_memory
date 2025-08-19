@@ -13,6 +13,8 @@ pub enum ShmemError {
     MapCreateFailed(u32),
     MapOpenFailed(u32),
     UnknownOsError(u32),
+    NotInTmpfsMode,
+    NoTmpfsBaseDir,
 }
 
 impl std::fmt::Display for ShmemError {
@@ -31,6 +33,8 @@ impl std::fmt::Display for ShmemError {
             ShmemError::MapCreateFailed(err) => write!(f, "Creating the shared memory failed, os error {err}"),
             ShmemError::MapOpenFailed(err) => write!(f, "Opening the shared memory failed, os error {err}"),
             ShmemError::UnknownOsError(err) => write!(f, "An unexpected OS error occurred, os error {err}"),
+            ShmemError::NotInTmpfsMode => f.write_str("Operation requires tmpfs mode to be enabled"),
+            ShmemError::NoTmpfsBaseDir => f.write_str("No tmpfs base directory specified"),
         }
     }
 }

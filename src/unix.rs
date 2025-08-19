@@ -259,9 +259,13 @@ pub fn create_mapping_tmpfs(
         .write(true)
         .mode({
             #[cfg(target_os = "macos")]
-            { u32::from(mode_bits) }
+            {
+                u32::from(mode_bits)
+            }
             #[cfg(not(target_os = "macos"))]
-            { mode_bits }
+            {
+                mode_bits
+            }
         })
         .open(file_path)
         .map_err(|e| match e.kind() {

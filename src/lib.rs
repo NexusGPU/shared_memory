@@ -9,6 +9,8 @@ use std::fs::remove_file;
 use std::path::{Path, PathBuf};
 
 use cfg_if::cfg_if;
+
+#[cfg(not(target_os = "windows"))]
 pub use nix::sys::stat::Mode;
 
 cfg_if! {
@@ -163,6 +165,7 @@ impl ShmemConf {
                         .to_str()
                         .ok_or(ShmemError::UnknownOsError(0))?,
                     self.size,
+                    #[cfg(not(target_os = "windows"))]
                     self.mode,
                 )?
             } else {
@@ -172,6 +175,7 @@ impl ShmemConf {
                     match os_impl::create_mapping_tmpfs(
                         random_path.to_str().ok_or(ShmemError::UnknownOsError(0))?,
                         self.size,
+                        #[cfg(not(target_os = "windows"))]
                         self.mode,
                     ) {
                         Err(ShmemError::MappingIdExists) => continue,

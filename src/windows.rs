@@ -267,11 +267,7 @@ fn new_map(
 }
 
 //Creates a mapping specified by the uid and size
-pub fn create_mapping(
-    unique_id: &str,
-    map_size: usize,
-    _mode: Option<Mode>,
-) -> Result<MapData, ShmemError> {
+pub fn create_mapping(unique_id: &str, map_size: usize) -> Result<MapData, ShmemError> {
     new_map(unique_id, map_size, true, false)
 }
 
@@ -284,11 +280,7 @@ pub fn open_mapping(
     new_map(unique_id, map_size, false, ext.allow_raw)
 }
 
-pub fn create_mapping_tmpfs(
-    _unique_id: &str,
-    _map_size: usize,
-    _mode: Option<Mode>,
-) -> Result<MapData, ShmemError> {
+pub fn create_mapping_tmpfs(_unique_id: &str, _map_size: usize) -> Result<MapData, ShmemError> {
     unimplemented!()
 }
 

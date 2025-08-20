@@ -2,6 +2,7 @@
 //!
 //! For help on how to get started, take a look at the [examples](https://github.com/elast0ny/shared_memory-rs/tree/master/examples) !
 
+use std::borrow::Cow;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 
@@ -275,15 +276,15 @@ impl ShmemConf {
         let mut retry = 0;
 
         loop {
-            let target_identifier = if let Some(ref unique_id) = self.os_id {
+            let target_identifier: Cow<str> = if let Some(ref unique_id) = self.os_id {
                 retry = 5;
                 if cfg!(not(target_os = "windows")) && self.use_tmpfs {
                     // tmpfs mode: convert os_id to file path
                     let tmpfs_path = self.get_tmpfs_file_path()?;
-                    tmpfs_path.to_string_lossy().to_string()
+                    Cow::Owned(tmpfs_path.to_string_lossy().into_owned())
                 } else {
                     // shm_open mode: use os_id directly
-                    unique_id.clone()
+                    unique_id.as_str().into()
                 }
             } else if let Some(ref flink_path) = self.flink_path {
                 // Read from flink file
@@ -295,7 +296,7 @@ impl ShmemConf {
                 flink_content.clear();
                 f.read_to_string(&mut flink_content)
                     .map_err(ShmemError::LinkReadFailed)?;
-                flink_content.clone()
+                flink_content.as_str().into()
             } else {
                 return Err(ShmemError::NoLinkOrOsId);
             };

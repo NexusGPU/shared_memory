@@ -358,6 +358,17 @@ impl Shmem {
     pub fn get_os_id(&self) -> &str {
         self.mapping.unique_id.as_str()
     }
+
+    /// Returns the tmpfs path if present
+    #[cfg(not(target_os = "windows"))]
+    pub fn get_tmpfs_file_path(&self) -> Option<PathBuf> {
+        if self.config.use_tmpfs {
+            self.config.get_tmpfs_file_path().ok()
+        } else {
+            None
+        }
+    }
+
     /// Returns the flink path if present
     pub fn get_flink_path(&self) -> Option<&PathBuf> {
         self.config.flink_path.as_ref()

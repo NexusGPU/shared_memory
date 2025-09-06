@@ -1,14 +1,14 @@
 use std::num::NonZeroUsize;
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
-use std::os::unix::io::RawFd;
-use std::ptr::null_mut;
+use std::ptr::{null_mut, NonNull};
 
 use crate::log::*;
 use nix::fcntl::OFlag;
 use nix::sys::mman::{mmap, munmap, shm_open, shm_unlink, MapFlags, ProtFlags};
 use nix::sys::stat::{fstat, Mode};
-use nix::unistd::{close, ftruncate};
+use nix::unistd::ftruncate;
 
 use crate::ShmemError;
 
@@ -20,7 +20,7 @@ pub struct MapData {
     owner: bool,
 
     //File descriptor to our open mapping
-    map_fd: RawFd,
+    map_fd: OwnedFd,
 
     //Shared mapping uid
     pub unique_id: String,
@@ -49,13 +49,18 @@ impl Drop for MapData {
                 self.map_ptr,
                 self.map_size
             );
-            if let Err(_e) = unsafe { munmap(self.map_ptr as *mut _, self.map_size) } {
+            if let Err(_e) = unsafe {
+                munmap(
+                    NonNull::new_unchecked(self.map_ptr as *mut _),
+                    self.map_size,
+                )
+            } {
                 debug!("Failed to munmap() shared memory mapping : {}", _e);
             };
         }
 
         //Unlink shmem
-        if self.map_fd != 0 {
+        if self.map_fd.as_raw_fd() != 0 {
             //unlink shmem if we created it
             if self.owner {
                 debug!("Deleting persistent mapping");
@@ -74,13 +79,9 @@ impl Drop for MapData {
                 }
             }
 
-            trace!("close({})", self.map_fd);
-            if let Err(_e) = close(self.map_fd) {
-                debug!(
-                    "os_impl::Linux : Failed to close() shared memory file descriptor : {}",
-                    _e
-                );
-            };
+            trace!("close({})", self.map_fd.as_raw_fd());
+            // Note: OwnedFd automatically closes on drop, so we don't need to call close
+            // The file descriptor will be closed when self.map_fd is dropped
         }
     }
 }
@@ -115,7 +116,7 @@ pub fn create_mapping(
                 unique_id,
                 OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR,
                 mode,
-                v
+                v.as_raw_fd()
             );
             v
         }
@@ -134,8 +135,12 @@ pub fn create_mapping(
 
     //Enlarge the memory descriptor file size to the requested map size
     debug!("Creating memory mapping");
-    trace!("ftruncate({}, {})", new_map.map_fd, new_map.map_size);
-    match ftruncate(new_map.map_fd, new_map.map_size as _) {
+    trace!(
+        "ftruncate({}, {})",
+        new_map.map_fd.as_raw_fd(),
+        new_map.map_size
+    );
+    match ftruncate(&new_map.map_fd, new_map.map_size as _) {
         Ok(_) => {}
         Err(e) => return Err(ShmemError::UnknownOsError(e as u32)),
     };
@@ -148,7 +153,7 @@ pub fn create_mapping(
             nz_map_size,                                  //size of mapping
             ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, //Permissions on pages
             MapFlags::MAP_SHARED,                         //What kind of mapping
-            new_map.map_fd,                               //fd
+            &new_map.map_fd,                              //fd
             0,                                            //Offset into fd
         )
     } {
@@ -158,10 +163,10 @@ pub fn create_mapping(
                 new_map.map_size,
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED,
-                new_map.map_fd,
+                new_map.map_fd.as_raw_fd(),
                 v
             );
-            v as *mut _
+            v.as_ptr() as *mut u8
         }
         Err(e) => return Err(ShmemError::MapCreateFailed(e as u32)),
     };
@@ -188,7 +193,7 @@ pub fn open_mapping(
                 unique_id,
                 OFlag::O_RDWR,
                 Mode::S_IRUSR,
-                v
+                v.as_raw_fd()
             );
             v
         }
@@ -205,7 +210,7 @@ pub fn open_mapping(
     };
 
     //Get mmap size
-    new_map.map_size = match fstat(new_map.map_fd) {
+    new_map.map_size = match fstat(&new_map.map_fd) {
         Ok(v) => v.st_size as usize,
         Err(e) => return Err(ShmemError::MapOpenFailed(e as u32)),
     };
@@ -220,7 +225,7 @@ pub fn open_mapping(
             nz_map_size,                                  //size of mapping
             ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, //Permissions on pages
             MapFlags::MAP_SHARED,                         //What kind of mapping
-            new_map.map_fd,                               //fd
+            &new_map.map_fd,                              //fd
             0,                                            //Offset into fd
         )
     } {
@@ -230,10 +235,10 @@ pub fn open_mapping(
                 new_map.map_size,
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED,
-                new_map.map_fd,
+                new_map.map_fd.as_raw_fd(),
                 v
             );
-            v as *mut _
+            v.as_ptr() as *mut u8
         }
         Err(e) => return Err(ShmemError::MapOpenFailed(e as u32)),
     };
@@ -274,10 +279,11 @@ pub fn create_mapping_tmpfs(
         })?;
 
     let fd = file.as_raw_fd();
+    let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
 
     // Set file size
     trace!("ftruncate({}, {})", fd, map_size);
-    match ftruncate(fd, map_size as _) {
+    match ftruncate(&owned_fd, map_size as _) {
         Ok(_) => {}
         Err(e) => return Err(ShmemError::UnknownOsError(e as u32)),
     }
@@ -290,7 +296,7 @@ pub fn create_mapping_tmpfs(
             nz_map_size,                                  // Size of mapping
             ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, // Permissions on pages
             MapFlags::MAP_SHARED,                         // What kind of mapping
-            fd,                                           // File descriptor
+            &owned_fd,                                    // File descriptor
             0,                                            // Offset into fd
         )
     } {
@@ -300,10 +306,10 @@ pub fn create_mapping_tmpfs(
                 map_size,
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED,
-                fd,
+                owned_fd.as_raw_fd(),
                 v
             );
-            v as *mut u8
+            v.as_ptr() as *mut u8
         }
         Err(e) => return Err(ShmemError::MapCreateFailed(e as u32)),
     };
@@ -314,7 +320,7 @@ pub fn create_mapping_tmpfs(
     Ok(MapData {
         owner: true,
         unique_id: String::from(file_path),
-        map_fd: fd,
+        map_fd: owned_fd,
         map_size,
         map_ptr,
         is_tmpfs: true,
@@ -335,9 +341,10 @@ pub fn open_mapping_tmpfs(file_path: &str, _expected_size: usize) -> Result<MapD
         .map_err(|e| ShmemError::MapOpenFailed(e.raw_os_error().unwrap_or(0) as u32))?;
 
     let fd = file.as_raw_fd();
+    let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
 
     // Get file size
-    let map_size = match fstat(fd) {
+    let map_size = match fstat(&owned_fd) {
         Ok(v) => v.st_size as usize,
         Err(e) => return Err(ShmemError::MapOpenFailed(e as u32)),
     };
@@ -352,7 +359,7 @@ pub fn open_mapping_tmpfs(file_path: &str, _expected_size: usize) -> Result<MapD
             nz_map_size,                                  // Size of mapping
             ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, // Permissions on pages
             MapFlags::MAP_SHARED,                         // What kind of mapping
-            fd,                                           // File descriptor
+            &owned_fd,                                    // File descriptor
             0,                                            // Offset into fd
         )
     } {
@@ -362,10 +369,10 @@ pub fn open_mapping_tmpfs(file_path: &str, _expected_size: usize) -> Result<MapD
                 map_size,
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED,
-                fd,
+                owned_fd.as_raw_fd(),
                 v
             );
-            v as *mut u8
+            v.as_ptr() as *mut u8
         }
         Err(e) => return Err(ShmemError::MapOpenFailed(e as u32)),
     };
@@ -376,7 +383,7 @@ pub fn open_mapping_tmpfs(file_path: &str, _expected_size: usize) -> Result<MapD
     Ok(MapData {
         owner: false,
         unique_id: String::from(file_path),
-        map_fd: fd,
+        map_fd: owned_fd,
         map_size,
         map_ptr,
         is_tmpfs: true,

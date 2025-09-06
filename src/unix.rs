@@ -116,7 +116,7 @@ pub fn create_mapping(
                 unique_id,
                 OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR,
                 mode,
-                v
+                v.as_raw_fd()
             );
             v
         }
@@ -193,7 +193,7 @@ pub fn open_mapping(
                 unique_id,
                 OFlag::O_RDWR,
                 Mode::S_IRUSR,
-                v
+                v.as_raw_fd()
             );
             v
         }

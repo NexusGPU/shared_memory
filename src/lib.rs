@@ -139,7 +139,7 @@ impl ShmemConf {
 
         if let Some(ref os_id) = self.os_id {
             // Use os_id as filename
-            Ok(base_dir.join(format!("shmem_{os_id}")))
+            Ok(base_dir.join(os_id))
         } else {
             // Generate random filename
             Ok(base_dir.join(format!("shmem_{:X}", rand::random::<u64>())))
